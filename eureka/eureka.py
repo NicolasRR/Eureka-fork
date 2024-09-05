@@ -22,6 +22,7 @@ ISAAC_ROOT_DIR = f"{EUREKA_ROOT_DIR}/../isaacgymenvs/isaacgymenvs"
 @hydra.main(config_path="cfg", config_name="config", version_base="1.1")
 def main(cfg):
     workspace_dir = Path.cwd()
+    print(EUREKA_ROOT_DIR)
     logging.info(f"Workspace: {workspace_dir}")
     logging.info(f"Project Root: {EUREKA_ROOT_DIR}")
 
@@ -53,7 +54,7 @@ def main(cfg):
     reward_signature = file_to_string(f'{prompt_dir}/reward_signature.txt')
     policy_feedback = file_to_string(f'{prompt_dir}/policy_feedback.txt')
     execution_error_feedback = file_to_string(f'{prompt_dir}/execution_error_feedback.txt')
-
+    cot_reward = file_to_string(f'{prompt_dir}/CoT_reward.txt')
     initial_system = initial_system.format(task_reward_signature_string=reward_signature) + code_output_tip
     initial_user = initial_user.format(task_obs_code_string=task_obs_code_string, task_description=task_description)
     messages = [{"role": "system", "content": initial_system}, {"role": "user", "content": initial_user}]
@@ -151,7 +152,50 @@ def main(cfg):
                 logging.info(f"Iteration {iter}: Code Run {response_id} cannot parse function signature!")
                 continue
 
-            code_runs.append(code_string)
+            #####################
+            # FIXME ensure code string is actually what we need or needs to be cleaned more
+            cot_reward_ = cot_reward.format(task_obs_code_string=task_obs_code_string, task_description=task_description, rewad_code=code_string)
+            message = [{"role": "system", "content": initial_system}, {"role": "user", "content": cot_reward_}]
+            for attempt in range(1000):
+                try:
+                    response = openai.ChatCompletion.create(
+                        model=model,
+                        messages=message,
+                        temperature=cfg.temperature,
+                        n=1
+                    )
+                    break
+                except Exception as e:
+                    logging.info(f"Attempt {attempt+1} failed with error: {e}")
+                    time.sleep(1)
+            
+            response_cur = response["choices"][0]["message"]["content"]
+            prompt_tokens = response["usage"]["prompt_tokens"]
+            total_completion_token += response["usage"]["completion_tokens"]
+            total_token += response["usage"]["total_tokens"]
+
+            for pattern in patterns:
+                code_string = re.search(pattern, response_cur, re.DOTALL)
+                if code_string is not None:
+                    code_string = code_string.group(1).strip()
+                    break
+            code_string = response_cur if not code_string else code_string
+
+            # Remove unnecessary imports
+            lines = code_string.split("\n")
+            for i, line in enumerate(lines):
+                if line.strip().startswith("def "):
+                    code_string = "\n".join(lines[i:])
+                    
+            # Add the Eureka Reward Signature to the environment code
+            try:
+                gpt_reward_signature, input_lst = get_function_signature(code_string)
+            except Exception as e:
+                logging.info(f"Iteration {iter}: Code Run {response_id} cannot parse improved function signature!")
+                continue
+            
+            code_runs.append(code_string)            
+            #####################
             reward_signature = [
                 f"self.rew_buf[:], self.rew_dict = {gpt_reward_signature}",
                 f"self.extras['gpt_reward'] = self.rew_buf.mean()",
@@ -205,7 +249,11 @@ def main(cfg):
         successes = []
         reward_correlations = []
         code_paths = []
-        
+        # Wait for all subprocesses to finish
+        for process in rl_runs:
+            process.wait()
+        # Gather RL training results and construct reward reflection
+        exit()
         exec_success = False 
         for response_id, (code_run, rl_run) in enumerate(zip(code_runs, rl_runs)):
             rl_run.communicate()
