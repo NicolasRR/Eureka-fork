@@ -250,10 +250,11 @@ def main(cfg):
         reward_correlations = []
         code_paths = []
         # Wait for all subprocesses to finish
-        for process in rl_runs:
-            process.wait()
+        if (response_id>0 and (response_id%4 == 3)) or response_id == (cfg.sample-1):
+            for process in rl_runs:
+                process.wait()
+        
         # Gather RL training results and construct reward reflection
-        exit()
         exec_success = False 
         for response_id, (code_run, rl_run) in enumerate(zip(code_runs, rl_runs)):
             rl_run.communicate()
